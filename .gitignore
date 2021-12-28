@@ -1,0 +1,9 @@
+# Build
+/target
+Cargo.lock
+
+# Fmt
+**/*.rs.bk
+
+# custom
+.idea/
