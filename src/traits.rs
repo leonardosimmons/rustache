@@ -1,32 +1,14 @@
-#[derive(PartialEq, Eq)]
-struct A {}
-
-#[derive(PartialEq, Eq)]
-struct B {}
-
-pub trait AnyTrait {
-    fn as_any(&self) -> &dyn std::any::Any;
-}
-impl Eq for dyn AnyTrait {}
-impl PartialEq<Self> for dyn AnyTrait {
-    fn eq(&self, other: &Self) -> bool {
-        let x = self.as_any();
-        let y = other.as_any();
-        if x.is::<A>() && y.is::<A>() {
-            true
-        } else if x.is::<B>() && y.is::<B>() {
-            true
-        } else {
-            false
-        }
-    }
-}
-
-pub trait Memoize<K, V>
+pub trait CacheCapacityController<K, V>
     where
-        K: Copy + Eq + std::hash::Hash,
-        V: Copy,
+        K: Eq + std::hash::Hash,
 {
-    fn memoize(&mut self, args: K) -> V;
-    fn value(&mut self, args: K) -> V;
+    fn capacity(self, entries: usize) -> Self;
+    fn check_capacity(&self) -> Result<(), ()>;
+    fn clean_up(&mut self) -> Result<(K, V), ()>;
+}
+
+pub trait CacheExpirationController {
+    fn expires(self, seconds: u64) -> Self;
+    fn revalidate(self, status: bool) -> Self;
+    fn validate_expiration(&self) -> Result<(), &str>;
 }
