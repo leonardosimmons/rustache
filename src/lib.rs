@@ -1,11 +1,12 @@
 #![allow(unused)]
-
 use chrono;
+use linked_hash_map::LinkedHashMap;
 
 pub mod traits;
 use traits::Memoize;
 
 const DEFAULT_TTL_DURATION: u64 = 10;
+const DEFAULT_CACHE_CAPACITY: usize = 8;
 
 #[derive(PartialEq)]
 enum RevalidationAction {
@@ -16,13 +17,13 @@ enum RevalidationAction {
 enum TtlSetting {
     Blocking,
     Expire,
-    Swr
+    Swr,
 }
 
 struct RevalidationSettings {
     action: RevalidationAction,
     duration: u64,
-    setting: TtlSetting
+    setting: TtlSetting,
 }
 
 struct TtlOptions {
@@ -31,37 +32,58 @@ struct TtlOptions {
 }
 
 pub struct CacheNode<K, V, C> {
-    cache: std::collections::HashMap<K, V>,
+    cache: linked_hash_map::LinkedHashMap<K, V>,
     ttl: TtlOptions,
-    calculation: Option<C>
+    capacity: usize,
+    calculation: Option<C>,
 }
 
-// Uninitialized ----------------------------------------
 impl<K, V, C> CacheNode<K, V, C>
+where
+    K: Copy + Eq + std::hash::Hash,
+    V: Copy,
+    C: Fn(K) -> V,
 {
-    pub fn new() -> CacheNode<K, V, C> {
-        CacheNode {
-            cache: std::collections::HashMap::new(),
-            ttl: TtlOptions {
-                revalidation: RevalidationSettings {
-                    action: RevalidationAction::EXPIRE,
-                    duration: DEFAULT_TTL_DURATION,
-                    setting: TtlSetting::Blocking
-                },
-                expiration: None
-            },
-            calculation: None
+    pub fn capacity(mut self, entries: usize) -> Self {
+        self.capacity = entries;
+        self
+    }
+
+    fn check_capacity(&self) -> Result<(), ()> {
+        if self.cache.len() < self.capacity {
+            Ok(())
+        } else {
+            Err(())
         }
     }
-}
 
-// Initialized ------------------------------------------
-impl<K, V, C> CacheNode<K, V, C>
-{
+    fn clean_up(&mut self) -> Result<(K, V), ()> {
+        match self.cache.pop_front() {
+            Some(e ) => Ok(e),
+            None => Err(())
+        }
+    }
+
     pub fn expires(mut self, seconds: u64) -> Self {
         self.ttl.expiration = Some(chrono::Utc::now() + chrono::Duration::seconds(seconds as i64));
         self.ttl.revalidation.duration = seconds;
         self
+    }
+
+    pub fn new() -> CacheNode<K, V, C> {
+        CacheNode {
+            cache: linked_hash_map::LinkedHashMap::new(),
+            ttl: TtlOptions {
+                revalidation: RevalidationSettings {
+                    action: RevalidationAction::EXPIRE,
+                    duration: DEFAULT_TTL_DURATION,
+                    setting: TtlSetting::Blocking,
+                },
+                expiration: None,
+            },
+            capacity: DEFAULT_CACHE_CAPACITY,
+            calculation: None,
+        }
     }
 
     pub fn revalidate(mut self, status: bool) -> Self {
@@ -88,16 +110,16 @@ impl<K, V, C> CacheNode<K, V, C>
         }
     }
 
-    pub fn with_calc(mut self, calculation: C) -> Self {
+    pub fn with_memo(mut self, calculation: C) -> Self {
         self.calculation = Some(calculation);
         self
     }
 }
 impl<K, V, C> Memoize<K, V> for CacheNode<K, V, C>
-    where
-        K: Copy + Eq + std::hash::Hash,
-        V: Copy,
-        C: Fn(K) -> V,
+where
+    K: Copy + Eq + std::hash::Hash,
+    V: Copy,
+    C: Fn(K) -> V,
 {
     fn memoize(&mut self, args: K) -> V {
         let v = (*self.calculation.as_ref().unwrap())(args);
@@ -108,7 +130,7 @@ impl<K, V, C> Memoize<K, V> for CacheNode<K, V, C>
     fn value(&mut self, args: K) -> V {
         match self.cache.get(&args) {
             Some(v) => {
-                if let Ok(()) = self.validate_expiration() {
+                if let Ok(_) = self.validate_expiration() {
                     *v
                 } else {
                     if self.ttl.revalidation.action == RevalidationAction::REVALIDATE {
@@ -118,16 +140,28 @@ impl<K, V, C> Memoize<K, V> for CacheNode<K, V, C>
                         );
                         *v
                     } else {
-                        self.cache.clear();
                         self.ttl.expiration = Some(
                             chrono::Utc::now()
                                 + chrono::Duration::seconds(self.ttl.revalidation.duration as i64),
                         );
+                        self.cache.clear();
                         self.memoize(args)
                     }
                 }
             }
-            None => self.memoize(args),
+            None => {
+                if let Ok(_) = self.check_capacity() {
+                    self.memoize(args)
+                } else {
+                    match self.clean_up() {
+                        Ok(_) => self.memoize(args),
+                        Err(_) => {
+                            self.cache.clear();
+                            panic!("Cache buffer overflow")
+                        }
+                    }
+                }
+            }
         }
     }
 }
