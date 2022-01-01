@@ -48,7 +48,7 @@ where
     K: Eq + std::hash::Hash,
     V: Copy,
 {
-    pub fn get(mut self, key: K) -> Option<V> {
+    pub fn value(mut self, key: K) -> Option<V> {
         match self.cache.get(&key) {
             Some(v) => {
                 if let Ok(_) = self.validate_expiration() {
@@ -112,37 +112,37 @@ where
         v
     }
 
-    pub fn value(&mut self, args: K) -> V {
+    pub fn value(&mut self, args: K) -> Option<V> {
         match self.cache.get(&args) {
             Some(v) => {
                 if let Ok(_) = self.validate_expiration() {
-                    *v
+                    Some(*v)
                 } else {
                     if self.ttl.revalidation.action == RevalidationAction::REVALIDATE {
                         self.ttl.expiration = Some(
                             chrono::Utc::now()
                                 + chrono::Duration::seconds(self.ttl.revalidation.duration as i64),
                         );
-                        *v
+                        Some(*v)
                     } else {
                         self.ttl.expiration = Some(
                             chrono::Utc::now()
                                 + chrono::Duration::seconds(self.ttl.revalidation.duration as i64),
                         );
                         self.cache.clear();
-                        self.memoize(args)
+                        Some(self.memoize(args))
                     }
                 }
             }
             None => {
                 if let Ok(_) = self.check_capacity() {
-                    self.memoize(args)
+                    Some(self.memoize(args))
                 } else {
                     match self.clean_up() {
-                        Ok(_) => self.memoize(args),
+                        Ok(_) => Some(self.memoize(args)),
                         Err(_) => {
                             self.cache.clear();
-                            self.memoize(args)
+                            Some(self.memoize(args))
                         }
                     }
                 }
