@@ -1,6 +1,7 @@
 #![allow(unused)]
 use chrono;
-use linked_hash_map::LinkedHashMap;
+use chrono::format::Pad;
+use linked_hash_map::{Iter, LinkedHashMap};
 
 pub mod traits;
 use crate::traits::{CacheCapacityController, CacheExpirationController};
@@ -48,7 +49,7 @@ where
     K: Eq + std::hash::Hash,
     V: Copy,
 {
-    pub fn value(mut self, key: K) -> Option<V> {
+    pub fn get(&mut self, key: K) -> Option<V> {
         match self.cache.get(&key) {
             Some(v) => {
                 if let Ok(_) = self.validate_expiration() {
@@ -71,6 +72,22 @@ where
                 }
             }
             None => None,
+        }
+    }
+
+    pub fn insert(&mut self, key: K, value: V) {
+        if let Ok(_) = self.check_capacity() {
+            self.cache.insert(key, value);
+        } else {
+            match self.clean_up() {
+                Ok(_) => {
+                    self.cache.insert(key, value);
+                }
+                Err(_) => {
+                    self.cache.clear();
+                    self.cache.insert(key, value);
+                }
+            }
         }
     }
 
