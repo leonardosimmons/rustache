@@ -1,7 +1,6 @@
 #![allow(unused)]
 use chrono;
-use chrono::format::Pad;
-use linked_hash_map::{Iter, LinkedHashMap};
+use linked_hash_map::{LinkedHashMap};
 
 pub mod traits;
 use crate::traits::{CacheCapacityController, CacheExpirationController};
@@ -34,33 +33,33 @@ struct TtlOptions {
 
 pub struct Initialized;
 pub struct Memoized<C> {
-    calculation: C,
+    calculation: Box<C>,
 }
 
 pub struct CacheNode<K, V, S> {
-    cache: linked_hash_map::LinkedHashMap<K, V>,
+    pub cache: linked_hash_map::LinkedHashMap<Box<K>, Box<V>>,
     ttl: TtlOptions,
     capacity: usize,
     controller: S,
 }
 
 impl<K, V> CacheNode<K, V, Initialized>
-where
-    K: Eq + std::hash::Hash,
-    V: Copy,
+    where
+        K: Eq + std::hash::Hash,
+        V: Copy,
 {
     pub fn get(&mut self, key: K) -> Option<V> {
         match self.cache.get(&key) {
             Some(v) => {
                 if let Ok(_) = self.validate_expiration() {
-                    Some(*v)
+                    Some(**v)
                 } else {
                     if self.ttl.revalidation.action == RevalidationAction::REVALIDATE {
                         self.ttl.expiration = Some(
                             chrono::Utc::now()
                                 + chrono::Duration::seconds(self.ttl.revalidation.duration as i64),
                         );
-                        Some(*v)
+                        Some(**v)
                     } else {
                         self.ttl.expiration = Some(
                             chrono::Utc::now()
@@ -77,15 +76,15 @@ where
 
     pub fn insert(&mut self, key: K, value: V) {
         if let Ok(_) = self.check_capacity() {
-            self.cache.insert(key, value);
+            self.cache.insert(Box::new(key), Box::new(value));
         } else {
             match self.clean_up() {
                 Ok(_) => {
-                    self.cache.insert(key, value);
+                    self.cache.insert(Box::new(key), Box::new(value));
                 }
                 Err(_) => {
                     self.cache.clear();
-                    self.cache.insert(key, value);
+                    self.cache.insert(Box::new(key), Box::new(value));
                 }
             }
         }
@@ -112,20 +111,20 @@ where
             cache: self.cache,
             capacity: self.capacity,
             ttl: self.ttl,
-            controller: Memoized { calculation },
+            controller: Memoized { calculation: Box::new(calculation) },
         }
     }
 }
 
 impl<K, V, C> CacheNode<K, V, Memoized<C>>
-where
-    K: Copy + Eq + std::hash::Hash,
-    V: Copy,
-    C: Fn(K) -> V,
+    where
+        K: Copy + Eq + std::hash::Hash,
+        V: Copy,
+        C: Fn(K) -> V,
 {
-    pub fn memoize(&mut self, args: K) -> V {
-        let v = (self.controller.calculation)(args);
-        self.cache.insert(args, v);
+    pub fn memoize(&mut self, args: &K) -> V {
+        let v = (*self.controller.calculation)(*args);
+        self.cache.insert(Box::new(*args), Box::new(v));
         v
     }
 
@@ -133,33 +132,33 @@ where
         match self.cache.get(&args) {
             Some(v) => {
                 if let Ok(_) = self.validate_expiration() {
-                    Some(*v)
+                    Some(**v)
                 } else {
                     if self.ttl.revalidation.action == RevalidationAction::REVALIDATE {
                         self.ttl.expiration = Some(
                             chrono::Utc::now()
                                 + chrono::Duration::seconds(self.ttl.revalidation.duration as i64),
                         );
-                        Some(*v)
+                        Some(**v)
                     } else {
                         self.ttl.expiration = Some(
                             chrono::Utc::now()
                                 + chrono::Duration::seconds(self.ttl.revalidation.duration as i64),
                         );
                         self.cache.clear();
-                        Some(self.memoize(args))
+                        Some(self.memoize(&args))
                     }
                 }
             }
             None => {
                 if let Ok(_) = self.check_capacity() {
-                    Some(self.memoize(args))
+                    Some(self.memoize(&args))
                 } else {
                     match self.clean_up() {
-                        Ok(_) => Some(self.memoize(args)),
+                        Ok(_) => Some(self.memoize(&args)),
                         Err(_) => {
                             self.cache.clear();
-                            Some(self.memoize(args))
+                            Some(self.memoize(&args))
                         }
                     }
                 }
@@ -169,8 +168,8 @@ where
 }
 
 impl<K, V, S> CacheCapacityController<K, V> for CacheNode<K, V, S>
-where
-    K: Eq + std::hash::Hash,
+    where
+        K: Eq + std::hash::Hash,
 {
     fn capacity(mut self, entries: usize) -> Self {
         self.capacity = entries;
@@ -187,7 +186,7 @@ where
 
     fn clean_up(&mut self) -> Result<(K, V), ()> {
         match self.cache.pop_front() {
-            Some(e) => Ok(e),
+            Some(e) => Ok((*e.0, *e.1)),
             None => Err(()),
         }
     }
@@ -223,4 +222,8 @@ impl<K, V, S> CacheExpirationController for CacheNode<K, V, S> {
             None => Ok(()),
         }
     }
+}
+
+pub struct Cache {
+    pub buffer: Vec<Box<dyn std::any::Any>>,
 }
