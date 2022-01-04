@@ -17,7 +17,7 @@ enum RevalidationAction {
 
 enum TtlSetting {
     Blocking,
-    // TODO: add async/await support
+    // TODO: add SWR support
     Swr,
 }
 
@@ -76,7 +76,7 @@ where
     }
 
     pub fn insert(&mut self, key: K, value: V) {
-        if let Ok(_) = self.check_capacity() {
+        if let true = self.capacity_check() {
             self.cache.insert(Rc::new(key), Rc::new(value));
         } else {
             match self.clean_up() {
@@ -154,7 +154,7 @@ where
                 }
             }
             None => {
-                if let Ok(_) = self.check_capacity() {
+                if let true = self.capacity_check() {
                     Some(self.memoize(&args))
                 } else {
                     match self.clean_up() {
@@ -170,7 +170,7 @@ where
     }
 }
 
-impl<K, V, S> NodeCapacityController<K, V> for CacheNode<K, V, S>
+impl<K, V, S> CapacityController<K, V> for CacheNode<K, V, S>
 where
     K: Eq + std::hash::Hash,
 {
@@ -179,12 +179,8 @@ where
         self
     }
 
-    fn check_capacity(&self) -> Result<(), ()> {
-        if self.cache.len() < self.capacity {
-            Ok(())
-        } else {
-            Err(())
-        }
+    fn capacity_check(&self) -> bool {
+        self.cache.len() < self.capacity
     }
 
     fn clean_up(&mut self) -> Result<(), ()> {
@@ -196,7 +192,7 @@ where
     }
 }
 
-impl<K, V, S> NodeExpirationController for CacheNode<K, V, S> {
+impl<K, V, S> ExpirationController for CacheNode<K, V, S> {
     fn expires(mut self, seconds: u64) -> Self {
         self.ttl.expiration = Some(chrono::Utc::now() + chrono::Duration::seconds(seconds as i64));
         self.ttl.revalidation.duration = seconds;
@@ -214,10 +210,9 @@ impl<K, V, S> NodeExpirationController for CacheNode<K, V, S> {
     }
 
     fn validate_expiration(&self) -> Result<(), &str> {
-        let t = chrono::Utc::now();
         match self.ttl.expiration {
             Some(expiration) => {
-                if t > expiration {
+                if chrono::Utc::now() > expiration {
                     Err("expired")
                 } else {
                     Ok(())
@@ -226,21 +221,6 @@ impl<K, V, S> NodeExpirationController for CacheNode<K, V, S> {
             None => Ok(()),
         }
     }
-}
-
-pub trait NodeCapacityController<K, V>
-    where
-        K: Eq + std::hash::Hash,
-{
-    fn capacity(self, entries: usize) -> Self;
-    fn check_capacity(&self) -> Result<(), ()>;
-    fn clean_up(&mut self) -> Result<(), ()>;
-}
-
-pub trait NodeExpirationController {
-    fn expires(self, seconds: u64) -> Self;
-    fn revalidate(self, status: bool) -> Self;
-    fn validate_expiration(&self) -> Result<(), &str>;
 }
 
 pub struct Cache {
@@ -263,11 +243,26 @@ impl Cache {
         let index = self
             .buffer
             .iter()
-            .position(|c| {
-                *Rc::clone(&Rc::new(c.downcast_ref::<N>().unwrap())) == *Rc::clone(&Rc::new(&node))
+            .position(|n| {
+                *Rc::clone(&Rc::new(n.downcast_ref::<N>().unwrap())) == *Rc::clone(&Rc::new(&node))
             })
             .unwrap();
 
         self.buffer.remove(index);
     }
+}
+
+pub trait CapacityController<K, V>
+    where
+        K: Eq + std::hash::Hash,
+{
+    fn capacity(self, entries: usize) -> Self;
+    fn capacity_check(&self) -> bool;
+    fn clean_up(&mut self) -> Result<(), ()>;
+}
+
+pub trait ExpirationController {
+    fn expires(self, seconds: u64) -> Self;
+    fn revalidate(self, status: bool) -> Self;
+    fn validate_expiration(&self) -> Result<(), &str>;
 }
